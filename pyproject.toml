@@ -1,0 +1,11 @@
+[project]
+name = "mixed-precision-rl"
+version = "0.1.0"
+description = "Figuring out mixed precision in RL"
+readme = "README.md"
+requires-python = ">=3.13.11"
+dependencies = [
+    "jax[cuda13]>=0.10.2",
+    "optax>=0.2.8",
+    "playground>=0.2.0",
+]
