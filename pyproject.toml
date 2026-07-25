@@ -10,6 +10,30 @@ dependencies = [
     "jaxtyping>=0.3.11",
     "optax>=0.2.8",
     "playground>=0.2.0",
+    "stoa-env>=0.1.2",
     "tyro>=1.0.15",
     "wandb>=0.28.0",
+    "warp-lang==1.13.0",
 ]
+
+[tool.ruff]
+ignore = ["F722", "E731"]
+ignore-init-module-imports = true
+
+[tool.ruff.lint.isort]
+section-order = ["future", "standard-library", "jax", "third-party", "first-party", "local-folder"]
+order-by-type = false
+force-sort-within-sections = true
+
+[tool.ruff.lint.isort.sections]
+jax = ["jax", "jaxtyping", "optax", "flax", "distrax"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = ["--capture=sys"]
