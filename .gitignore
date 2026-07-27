@@ -1,3 +1,7 @@
 __pycache__/
 logs/
 notes/
+wandb/
+.agents/
+.codex/
+.worktrees/

@@ -41,7 +41,14 @@ class DMCEnv(Environment):
         self.impl = impl
         self.warp_kernel_cache_dir = warp_kernel_cache_dir
 
+        import mujoco
         import mujoco_playground as mjp
+
+        # Playground 0.2.0 compares MuJoCo versions as strings, so 3.10 is
+        # incorrectly sent down the pre-3.3 Reacher compatibility path.
+        mj_spec = vars(mujoco)["MjSpec"]
+        if not hasattr(mj_spec, "find_body"):
+            mj_spec.find_body = mj_spec.body
 
         if self.warp_kernel_cache_dir is not None:
             import warp as wp
@@ -49,6 +56,8 @@ class DMCEnv(Environment):
             wp.config.kernel_cache_dir = self.warp_kernel_cache_dir
 
         config = mjp.registry.get_default_config(self.env_name)
+        if self.impl == "warp" and self.env_name.startswith("Reacher"):
+            config.njmax = max(config.njmax, 1)
         self._env = mjp.registry.load(
             self.env_name,
             config=config,

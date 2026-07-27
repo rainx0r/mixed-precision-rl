@@ -9,21 +9,22 @@ import flax.linen as nn
 from flax.training.train_state import TrainState
 import jax
 import jax.numpy as jnp
+from jax.typing import DTypeLike
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 import optax
 
 import tyro
-import wandb
 
 from mixed_precision_rl.envs.base import Environment
 from mixed_precision_rl.envs.dmc import DMCEnv
-from mixed_precision_rl.types import EnvState, Observation
+from mixed_precision_rl.types import DType, EnvState, Observation
 from mixed_precision_rl.utils import (
     init_running_mean_std,
     normalize,
     RunningMeanStd,
     update_running_mean_std,
 )
+import wandb
 
 
 class RolloutExtras(TypedDict):
@@ -55,7 +56,7 @@ class Policy(nn.Module):
     output_dim: int
     width: int = 32
     depth: int = 4
-    dtype: jnp.dtype = jnp.float32
+    dtype: DTypeLike = jnp.float32
     activation_fn: Callable[[jax.Array], jax.Array] = nn.swish
     min_std: float = 1e-3
     var_scale: float = 1.0
@@ -87,7 +88,7 @@ class ValueFunction(nn.Module):
     width: int = 256
     depth: int = 5
     output_dim: int = 1
-    dtype: jnp.dtype = jnp.float32
+    dtype: DTypeLike = jnp.float32
     activation_fn: Callable[[jax.Array], jax.Array] = nn.swish
 
     @nn.compact
@@ -287,7 +288,8 @@ def rollout(
     observations: Observation,
     key: PRNGKeyArray,
     rollout_length: int,
-) -> tuple[EnvState, Observation, PRNGKeyArray, RunningMeanStd, Rollout]:
+    observation_dtype: DTypeLike = jnp.float32,
+) -> tuple[RunningMeanStd, EnvState, Observation, PRNGKeyArray, Rollout]:
     def step(carry, _):
         env_states, observations, key, next_normalizer = carry
         key, action_key = jax.random.split(key)
@@ -304,12 +306,14 @@ def rollout(
         next_state, timestep = envs.step(env_states, action)
         next_observation = timestep.info["next_observation"]
         data = Rollout(
-            observations=normalized_observations,
+            observations=normalized_observations.astype(observation_dtype),
             actions=raw_action,
             rewards=timestep.reward,
             terminations=timestep.terminated,
             truncations=timestep.truncated,
-            next_observations=normalize(next_observation, normalizer),
+            next_observations=normalize(next_observation, normalizer).astype(
+                observation_dtype
+            ),
             extras={
                 "log_probs": log_prob,
                 "episode_returns": timestep.info["episode_return"],
@@ -327,7 +331,7 @@ def rollout(
         None,
         length=rollout_length,
     )
-    return env_states, observations, key, normalizer, data
+    return normalizer, env_states, observations, key, data
 
 
 @dataclass
@@ -339,6 +343,8 @@ class Args:
     ACTION_REPEAT: int = 1
     WARP_KERNEL_CACHE_DIR: str | None = "/tmp/warp-cache"
     MATMUL_PRECISION: Literal["default", "high", "highest"] = "highest"
+    COMPUTE_DTYPE: DType = DType.float32
+    ROLLOUT_OBSERVATION_DTYPE: DType = DType.float32
 
     TOTAL_TIMESTEPS: int = 60_000_000
     NUM_ENVS: int = 2048
@@ -360,6 +366,7 @@ class Args:
     EVAL_FREQUENCY: int = 6_000_000
     NUM_EVAL_ENVS: int = 128
 
+    WANDB_ENTITY: str = "evangelos-ch"
     WANDB_PROJECT: str = "mixed-precision-rl"
     WANDB_MODE: Literal["online", "offline", "disabled", "shared"] = "online"
 
@@ -384,9 +391,10 @@ def main(args: Args) -> None:
     actual_timesteps = num_updates * environment_steps_per_update
 
     run = wandb.init(
+        entity=args.WANDB_ENTITY,
         project=args.WANDB_PROJECT,
         name=f"ppo_{args.ENV_NAME}_{args.ENV_IMPL}_{args.SEED}",
-        tags=["ppo", args.ENV_NAME, args.ENV_IMPL, "fp32-baseline"],
+        tags=["ppo", args.ENV_NAME],
         mode=args.WANDB_MODE,
         config={
             **asdict(args),
@@ -414,13 +422,16 @@ def main(args: Args) -> None:
         lambda x: jax.ShapeDtypeStruct(x.shape[1:], x.dtype), observations
     )
 
-    policy_module = Policy(output_dim=envs.action_space.action_dim)
+    policy_module = Policy(
+        output_dim=envs.action_space.action_dim,
+        dtype=args.COMPUTE_DTYPE(),
+    )
     policy = TrainState.create(
         apply_fn=policy_module.apply,
         params=policy_module.lazy_init(key_policy, obs_spec),
         tx=make_optimizer(args.LEARNING_RATE, args.MAX_GRAD_NORM),
     )
-    vf_module = ValueFunction()
+    vf_module = ValueFunction(dtype=args.COMPUTE_DTYPE())
     vf = TrainState.create(
         apply_fn=vf_module.apply,
         params=vf_module.lazy_init(key_value, obs_spec),
@@ -455,7 +466,7 @@ def main(args: Args) -> None:
     def train_step(
         state: ExperimentState,
     ) -> tuple[ExperimentState, dict[str, jax.Array]]:
-        env_states, observations, key, normalizer, data = rollout(
+        normalizer, env_states, observations, key, data = rollout(
             state.policy,
             state.normalizer,
             envs,
@@ -463,6 +474,7 @@ def main(args: Args) -> None:
             state.observations,
             state.key,
             args.ROLLOUT_LENGTH,
+            args.ROLLOUT_OBSERVATION_DTYPE(),
         )
 
         (policy, vf, key), metrics = ppo_update(
