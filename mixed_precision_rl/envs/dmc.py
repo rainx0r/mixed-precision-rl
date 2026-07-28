@@ -9,12 +9,14 @@ from jaxtyping import PRNGKeyArray
 from mixed_precision_rl.envs.base import (
     ContinuousActionSpace,
     Environment,
+    reset_agent_state,
     Timestep,
     TimestepInfo,
 )
 from mixed_precision_rl.types import Action, EnvState, LogDict, Observation
 
 Params = TypeVar("Params")
+AgentState = TypeVar("AgentState")
 
 
 class DMCEnv(Environment):
@@ -144,7 +146,12 @@ class DMCEnv(Environment):
         )
 
     def make_evaluation(
-        self, agent: Callable[[Observation, PRNGKeyArray, Params], Action]
+        self,
+        agent: Callable[
+            [Observation, PRNGKeyArray, Params, AgentState],
+            tuple[AgentState, Action],
+        ],
+        initial_agent_state: AgentState,
     ) -> Callable[[PRNGKeyArray, Params], LogDict]:
         @jax.jit
         def evaluate(rng: PRNGKeyArray, params: Params) -> LogDict:
@@ -154,23 +161,42 @@ class DMCEnv(Environment):
             active = jnp.ones(self.num_eval_envs, dtype=jnp.bool_)
 
             def step(carry, _):
-                env_states, observations, episode_returns, active, rng = carry
+                (
+                    env_states,
+                    observations,
+                    episode_returns,
+                    active,
+                    rng,
+                    agent_state,
+                ) = carry
                 rng, action_rng = jax.random.split(rng)
-                actions = agent(observations, action_rng, params)
+                agent_state, actions = agent(
+                    observations, action_rng, params, agent_state
+                )
                 env_states, timestep = self.step(env_states, actions)
+                done = timestep.terminated | timestep.truncated
+                agent_state = reset_agent_state(initial_agent_state, agent_state, done)
                 episode_returns = episode_returns + active * timestep.reward
-                active = active & ~(timestep.terminated | timestep.truncated)
+                active = active & ~done
                 return (
                     env_states,
                     timestep.observation,
                     episode_returns,
                     active,
                     rng,
+                    agent_state,
                 ), None
 
-            (_, _, episode_returns, _, _), _ = jax.lax.scan(
+            (_, _, episode_returns, _, _, _), _ = jax.lax.scan(
                 step,
-                (env_states, observations, episode_returns, active, rng),
+                (
+                    env_states,
+                    observations,
+                    episode_returns,
+                    active,
+                    rng,
+                    initial_agent_state,
+                ),
                 None,
                 length=math.ceil(self.max_episode_length / self.action_repeat),
             )

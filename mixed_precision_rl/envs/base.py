@@ -3,6 +3,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import NamedTuple, NotRequired, TypedDict, TypeVar
 
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray
 
@@ -16,11 +17,25 @@ from mixed_precision_rl.types import (
 )
 
 Params = TypeVar("Params")
+AgentState = TypeVar("AgentState")
+
+
+def reset_agent_state[State](
+    initial_agent_state: State,
+    agent_state: State,
+    done: Done,
+) -> State:
+    def reset_if_done(initial_value, value):
+        mask = done.reshape(done.shape + (1,) * (value.ndim - done.ndim))
+        return jnp.where(mask, initial_value, value)
+
+    return jax.tree.map(reset_if_done, initial_agent_state, agent_state)
 
 
 class TimestepInfo(TypedDict):
     episode_return: Array
     episode_steps: Array
+    achievements: NotRequired[dict[str, Array]]
     next_observation: NotRequired[Observation]
 
 
@@ -65,7 +80,12 @@ class Environment(abc.ABC):
 
     @abc.abstractmethod
     def make_evaluation(
-        self, agent: Callable[[Observation, PRNGKeyArray, Params], Action]
+        self,
+        agent: Callable[
+            [Observation, PRNGKeyArray, Params, AgentState],
+            tuple[AgentState, Action],
+        ],
+        initial_agent_state: AgentState,
     ) -> Callable[[PRNGKeyArray, Params], LogDict]: ...
 
     @property

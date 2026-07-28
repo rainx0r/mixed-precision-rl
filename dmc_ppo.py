@@ -388,7 +388,8 @@ def main(args: Args) -> None:
     run = wandb.init(
         entity=args.WANDB_ENTITY,
         project=args.WANDB_PROJECT,
-        name=args.WANDB_RUN_NAME or f"ppo_debug_{args.ENV_NAME}_{args.ENV_IMPL}_{args.COMPUTE_DTYPE.name}_{args.SEED}",
+        name=args.WANDB_RUN_NAME
+        or f"ppo_{args.ENV_NAME}_{args.ENV_IMPL}_{args.COMPUTE_DTYPE.name}_{args.SEED}",
         tags=["ppo", args.ENV_NAME, args.COMPUTE_DTYPE.name],
         mode=args.WANDB_MODE,
         config={
@@ -442,7 +443,7 @@ def main(args: Args) -> None:
         key=key,
     )
 
-    def evaluation_agent(observations, rng, params):
+    def evaluation_agent(observations, rng, params, agent_state):
         policy_params, observation_normalizer = params
         distribution = cast(
             distrax.MultivariateNormalDiag,
@@ -451,10 +452,12 @@ def main(args: Args) -> None:
                 normalize(observations, observation_normalizer),
             ),
         )
-        return jnp.tanh(distribution.sample(seed=rng))
+        return agent_state, jnp.tanh(distribution.sample(seed=rng))
 
     evaluation = (
-        envs.make_evaluation(evaluation_agent) if args.EVAL_FREQUENCY > 0 else None
+        envs.make_evaluation(evaluation_agent, None)
+        if args.EVAL_FREQUENCY > 0
+        else None
     )
 
     @jax.jit

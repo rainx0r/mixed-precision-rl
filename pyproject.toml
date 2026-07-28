@@ -5,6 +5,7 @@ description = "Figuring out mixed precision in RL"
 readme = "README.md"
 requires-python = ">=3.13.11"
 dependencies = [
+    "craftax>=1.6.1",
     "distrax>=0.1.9",
     "jax[cuda13]>=0.10.2",
     "jaxtyping>=0.3.11",

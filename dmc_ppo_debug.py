@@ -437,7 +437,8 @@ def main(args: Args) -> None:
     run = wandb.init(
         entity=args.WANDB_ENTITY,
         project=args.WANDB_PROJECT,
-        name=args.WANDB_RUN_NAME or f"ppo_debug_{args.ENV_NAME}_{args.ENV_IMPL}_{args.SEED}",
+        name=args.WANDB_RUN_NAME
+        or f"ppo_debug_{args.ENV_NAME}_{args.ENV_IMPL}_{args.SEED}",
         tags=["ppo", "debug", args.ENV_NAME, args.COMPUTE_DTYPE.name],
         mode=args.WANDB_MODE,
         config={
@@ -492,7 +493,7 @@ def main(args: Args) -> None:
         key=key,
     )
 
-    def evaluation_agent(observations, rng, params):
+    def evaluation_agent(observations, rng, params, agent_state):
         policy_params, observation_normalizer = params
         distribution = cast(
             distrax.MultivariateNormalDiag,
@@ -501,9 +502,9 @@ def main(args: Args) -> None:
                 normalize(observations, observation_normalizer),
             ),
         )
-        return jnp.tanh(distribution.sample(seed=rng))
+        return agent_state, jnp.tanh(distribution.sample(seed=rng))
 
-    def deterministic_evaluation_agent(observations, rng, params):
+    def deterministic_evaluation_agent(observations, rng, params, agent_state):
         del rng
         policy_params, observation_normalizer = params
         distribution = cast(
@@ -513,13 +514,15 @@ def main(args: Args) -> None:
                 normalize(observations, observation_normalizer),
             ),
         )
-        return jnp.tanh(distribution.mean())
+        return agent_state, jnp.tanh(distribution.mean())
 
     evaluation = (
-        envs.make_evaluation(evaluation_agent) if args.EVAL_FREQUENCY > 0 else None
+        envs.make_evaluation(evaluation_agent, None)
+        if args.EVAL_FREQUENCY > 0
+        else None
     )
     deterministic_evaluation = (
-        envs.make_evaluation(deterministic_evaluation_agent)
+        envs.make_evaluation(deterministic_evaluation_agent, None)
         if args.EVAL_FREQUENCY > 0
         else None
     )

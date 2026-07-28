@@ -577,7 +577,7 @@ def main(args: Args) -> None:
         key=key,
     )
 
-    def evaluation_agent(observations, rng, params):
+    def evaluation_agent(observations, rng, params, agent_state):
         actor_params, observation_normalizer = params
         distribution = cast(
             distrax.MultivariateNormalDiag,
@@ -587,11 +587,13 @@ def main(args: Args) -> None:
             ),
         )
         if args.DETERMINISTIC_EVAL:
-            return jnp.tanh(distribution.mean())
-        return jnp.tanh(distribution.sample(seed=rng))
+            return agent_state, jnp.tanh(distribution.mean())
+        return agent_state, jnp.tanh(distribution.sample(seed=rng))
 
     evaluation = (
-        envs.make_evaluation(evaluation_agent) if args.EVAL_FREQUENCY > 0 else None
+        envs.make_evaluation(evaluation_agent, None)
+        if args.EVAL_FREQUENCY > 0
+        else None
     )
     target_entropy = -args.TARGET_ENTROPY_SCALE * action_dim
     run.config.update({"TARGET_ENTROPY": target_entropy})
