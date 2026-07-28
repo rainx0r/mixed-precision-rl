@@ -2,7 +2,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 import math
 import time
-from typing import cast, Literal, NamedTuple, TypedDict
+from typing import Any, cast, Literal, NamedTuple, TypedDict
 
 import distrax
 import flax.linen as nn
@@ -119,6 +119,14 @@ def make_optimizer(
     return optax.chain(*transforms)
 
 
+def tree_l2_norm(tree: Any) -> jax.Array:
+    return jnp.sqrt(
+        sum(
+            jnp.square(leaf.astype(jnp.float32)).sum() for leaf in jax.tree.leaves(tree)
+        )
+    )
+
+
 def compute_gae(
     rewards: Float[Array, "time env"],
     values: Float[Array, "time env"],
@@ -197,7 +205,8 @@ def ppo_update(
         log_probs = distribution.log_prob(data.actions) - (
             forward_log_det_jacobian.sum(axis=-1)
         )
-        ratio = jnp.exp(log_probs - data.extras["log_probs"])
+        log_ratio = log_probs - data.extras["log_probs"]
+        ratio = jnp.exp(log_ratio)
         policy_loss = -jnp.minimum(
             ratio * advantages,
             jnp.clip(ratio, 1 - clip_eps, 1 + clip_eps) * advantages,
@@ -225,12 +234,22 @@ def ppo_update(
         vf_loss = vf_coeff * (0.5 * vf_loss.mean())
 
         total_loss = policy_loss + vf_loss + entropy_loss
+        policy_std = distribution.stddev()
         return total_loss, {
             "total_loss": total_loss,
             "policy_loss": policy_loss,
             "vf_loss": vf_loss,
             "entropy": entropy,
             "entropy_loss": entropy_loss,
+            "debug/approx_kl": ((ratio - 1) - log_ratio).mean(),
+            "debug/clip_fraction": (jnp.abs(ratio - 1) > clip_eps).mean(),
+            "debug/ratio_max": ratio.max(),
+            "debug/policy_std_min": policy_std.min(),
+            "debug/policy_std_max": policy_std.max(),
+            "debug/value_prediction_mean": predicted_values.mean(),
+            "debug/value_prediction_std": predicted_values.std(),
+            "debug/value_prediction_min": predicted_values.min(),
+            "debug/value_prediction_max": predicted_values.max(),
         }
 
     def update_minibatch(carry, xs):
@@ -251,8 +270,20 @@ def ppo_update(
             minibatch_old_values,
             entropy_key,
         )
+        policy_param_norm = tree_l2_norm(policy.params)
+        vf_param_norm = tree_l2_norm(vf.params)
+        policy_grad_norm = tree_l2_norm(grads[0])
+        vf_grad_norm = tree_l2_norm(grads[1])
         policy = policy.apply_gradients(grads=grads[0])
         vf = vf.apply_gradients(grads=grads[1])
+        metrics.update(
+            {
+                "debug/policy_grad_norm": policy_grad_norm,
+                "debug/vf_grad_norm": vf_grad_norm,
+                "debug/policy_param_norm": policy_param_norm,
+                "debug/vf_param_norm": vf_param_norm,
+            }
+        )
         return (policy, vf, key), metrics
 
     def update_epoch(carry, _):
@@ -272,12 +303,30 @@ def ppo_update(
         )
         return (policy, vf, key), metrics
 
-    return jax.lax.scan(
+    carry, metrics = jax.lax.scan(
         update_epoch,
         (policy, vf, key),
         None,
         length=num_epochs,
     )
+    metric_shape = metrics["total_loss"].shape
+    metrics.update(
+        {
+            "debug/advantage_std": jnp.broadcast_to(advantages.std(), metric_shape),
+            "debug/advantage_min": jnp.broadcast_to(advantages.min(), metric_shape),
+            "debug/advantage_max": jnp.broadcast_to(advantages.max(), metric_shape),
+            "debug/value_target_std": jnp.broadcast_to(
+                value_targets.std(), metric_shape
+            ),
+            "debug/value_target_min": jnp.broadcast_to(
+                value_targets.min(), metric_shape
+            ),
+            "debug/value_target_max": jnp.broadcast_to(
+                value_targets.max(), metric_shape
+            ),
+        }
+    )
+    return carry, metrics
 
 
 def rollout(
@@ -388,13 +437,14 @@ def main(args: Args) -> None:
     run = wandb.init(
         entity=args.WANDB_ENTITY,
         project=args.WANDB_PROJECT,
-        name=args.WANDB_RUN_NAME or f"ppo_debug_{args.ENV_NAME}_{args.ENV_IMPL}_{args.COMPUTE_DTYPE.name}_{args.SEED}",
-        tags=["ppo", args.ENV_NAME, args.COMPUTE_DTYPE.name],
+        name=args.WANDB_RUN_NAME or f"ppo_debug_{args.ENV_NAME}_{args.ENV_IMPL}_{args.SEED}",
+        tags=["ppo", "debug", args.ENV_NAME, args.COMPUTE_DTYPE.name],
         mode=args.WANDB_MODE,
         config={
             **asdict(args),
             "ACTUAL_TIMESTEPS": actual_timesteps,
             "TRANSITIONS_PER_UPDATE": transitions_per_update,
+            "DEBUG_INSTRUMENTATION_VERSION": 2,
         },
     )
 
@@ -453,8 +503,25 @@ def main(args: Args) -> None:
         )
         return jnp.tanh(distribution.sample(seed=rng))
 
+    def deterministic_evaluation_agent(observations, rng, params):
+        del rng
+        policy_params, observation_normalizer = params
+        distribution = cast(
+            distrax.MultivariateNormalDiag,
+            policy_module.apply(
+                policy_params,
+                normalize(observations, observation_normalizer),
+            ),
+        )
+        return jnp.tanh(distribution.mean())
+
     evaluation = (
         envs.make_evaluation(evaluation_agent) if args.EVAL_FREQUENCY > 0 else None
+    )
+    deterministic_evaluation = (
+        envs.make_evaluation(deterministic_evaluation_agent)
+        if args.EVAL_FREQUENCY > 0
+        else None
     )
 
     @jax.jit
@@ -492,6 +559,31 @@ def main(args: Args) -> None:
         done = data.terminations | data.truncations
         completed_episodes = done.sum()
         logs = jax.tree.map(jnp.mean, metrics)
+        observation_values = data.observations.astype(jnp.float32)
+        observation_norms = jnp.linalg.norm(observation_values, axis=-1)
+        logs.update(
+            {
+                "debug/approx_kl_max_over_updates": metrics["debug/approx_kl"].max(),
+                "debug/ratio_max": metrics["debug/ratio_max"].max(),
+                "debug/policy_std_min": metrics["debug/policy_std_min"].min(),
+                "debug/policy_std_max": metrics["debug/policy_std_max"].max(),
+                "debug/advantage_min": metrics["debug/advantage_min"].min(),
+                "debug/advantage_max": metrics["debug/advantage_max"].max(),
+                "debug/value_prediction_min": metrics[
+                    "debug/value_prediction_min"
+                ].min(),
+                "debug/value_prediction_max": metrics[
+                    "debug/value_prediction_max"
+                ].max(),
+                "debug/value_target_min": metrics["debug/value_target_min"].min(),
+                "debug/value_target_max": metrics["debug/value_target_max"].max(),
+                "debug/observation_norm_mean": observation_norms.mean(),
+                "debug/observation_norm_max": observation_norms.max(),
+                "debug/observation_min": observation_values.min(),
+                "debug/observation_max": observation_values.max(),
+                "debug/observation_std": observation_values.std(),
+            }
+        )
         logs.update(
             completed_episodes=completed_episodes,
             episode_return_sum=jnp.where(
@@ -511,13 +603,25 @@ def main(args: Args) -> None:
             logs,
         )
 
-    if evaluation is not None:
+    if evaluation is not None and deterministic_evaluation is not None:
         eval_key, evaluation_key = jax.random.split(eval_key)
         eval_logs = jax.device_get(
             evaluation(evaluation_key, (state.policy.params, state.normalizer))
         )
+        deterministic_eval_logs = jax.device_get(
+            deterministic_evaluation(
+                evaluation_key, (state.policy.params, state.normalizer)
+            )
+        )
+        host_eval_logs = {name: float(value) for name, value in eval_logs.items()}
+        host_eval_logs.update(
+            {
+                f"debug/deterministic_{name.removeprefix('eval/')}": float(value)
+                for name, value in deterministic_eval_logs.items()
+            }
+        )
         run.log(
-            {name: float(value) for name, value in eval_logs.items()},
+            host_eval_logs,
             step=0,
         )
         next_eval_step = args.EVAL_FREQUENCY
@@ -535,7 +639,10 @@ def main(args: Args) -> None:
         completed = int(logs.pop("completed_episodes"))
         episode_return_sum = float(logs.pop("episode_return_sum"))
         episode_steps_sum = float(logs.pop("episode_steps_sum"))
-        host_logs = {f"training/{name}": float(value) for name, value in logs.items()}
+        host_logs = {
+            name if name.startswith("debug/") else f"training/{name}": float(value)
+            for name, value in logs.items()
+        }
         host_logs["training/sps"] = environment_steps / elapsed
         if completed:
             host_logs["episode/return"] = episode_return_sum / completed
@@ -546,13 +653,32 @@ def main(args: Args) -> None:
             f"loss={host_logs['training/total_loss']:.3f}, "
             f"sps={host_logs['training/sps']:.0f}"
         )
-        if environment_steps >= next_eval_step and evaluation is not None:
+        if (
+            environment_steps >= next_eval_step
+            and evaluation is not None
+            and deterministic_evaluation is not None
+        ):
             eval_key, evaluation_key = jax.random.split(eval_key)
             eval_logs = jax.device_get(
                 evaluation(evaluation_key, (state.policy.params, state.normalizer))
             )
             host_logs.update({name: float(value) for name, value in eval_logs.items()})
+            deterministic_eval_logs = jax.device_get(
+                deterministic_evaluation(
+                    evaluation_key, (state.policy.params, state.normalizer)
+                )
+            )
+            host_logs.update(
+                {
+                    f"debug/deterministic_{name.removeprefix('eval/')}": float(value)
+                    for name, value in deterministic_eval_logs.items()
+                }
+            )
             summary += f", eval_reward={host_logs['eval/episode_reward']:.1f}"
+            summary += (
+                ", deterministic_eval_reward="
+                f"{host_logs['debug/deterministic_episode_reward']:.1f}"
+            )
             while next_eval_step <= environment_steps:
                 next_eval_step += args.EVAL_FREQUENCY
         if completed:
