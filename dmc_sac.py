@@ -244,6 +244,7 @@ def sac_update(
     def update_minibatch(carry, data):
         actor, critic, alpha, key = carry
         key, critic_key, actor_key = jax.random.split(key, 3)
+        actor_sample_key, alpha_sample_key = jax.random.split(actor_key)
         alpha_value = jax.lax.stop_gradient(alpha.apply_fn(alpha.params))
 
         def critic_loss(params):
@@ -285,27 +286,46 @@ def sac_update(
 
         def actor_loss(params):
             distribution = actor.apply_fn(params, data.observations)
-            raw_actions, base_log_probs = distribution.sample_and_log_prob(
-                seed=actor_key
+            actor_raw_actions, actor_base_log_probs = distribution.sample_and_log_prob(
+                seed=actor_sample_key
             )
-            forward_log_det_jacobian = 2.0 * (
-                jnp.log(2.0) - raw_actions - jax.nn.softplus(-2.0 * raw_actions)
+            alpha_raw_actions, alpha_base_log_probs = distribution.sample_and_log_prob(
+                seed=alpha_sample_key
             )
-            actions = jnp.tanh(raw_actions)
-            log_probs = base_log_probs - forward_log_det_jacobian.sum(axis=-1)
+            actor_forward_log_det_jacobian = 2.0 * (
+                jnp.log(2.0)
+                - actor_raw_actions
+                - jax.nn.softplus(-2.0 * actor_raw_actions)
+            )
+            alpha_forward_log_det_jacobian = 2.0 * (
+                jnp.log(2.0)
+                - alpha_raw_actions
+                - jax.nn.softplus(-2.0 * alpha_raw_actions)
+            )
+            actions = jnp.tanh(actor_raw_actions)
+            actor_log_probs = actor_base_log_probs - actor_forward_log_det_jacobian.sum(
+                axis=-1
+            )
+            alpha_log_probs = jax.lax.stop_gradient(
+                alpha_base_log_probs - alpha_forward_log_det_jacobian.sum(axis=-1)
+            )
             q_values = critic.apply_fn(critic.params, data.observations, actions)
             min_q_values = jnp.min(q_values, axis=0)
-            loss = (alpha_value * log_probs - min_q_values).mean()
-            return loss, log_probs
+            loss = (alpha_value * actor_log_probs - min_q_values).mean()
+            return loss, (actor_log_probs, alpha_log_probs)
 
-        (actor_loss_value, log_probs), actor_grads = jax.value_and_grad(
-            actor_loss, has_aux=True
-        )(actor.params)
+        (
+            (
+                actor_loss_value,
+                (actor_log_probs, alpha_log_probs),
+            ),
+            actor_grads,
+        ) = jax.value_and_grad(actor_loss, has_aux=True)(actor.params)
         actor = actor.apply_gradients(grads=actor_grads)
 
         def alpha_loss(params):
             log_alpha = params["params"]["log_alpha"]
-            entropy_error = jax.lax.stop_gradient(log_probs + target_entropy)
+            entropy_error = alpha_log_probs + target_entropy
             return -(log_alpha * entropy_error).mean()
 
         alpha_loss_value, alpha_grads = jax.value_and_grad(alpha_loss)(alpha.params)
@@ -334,7 +354,7 @@ def sac_update(
             "critic_loss": critic_loss_value,
             "alpha_loss": alpha_loss_value,
             "alpha": alpha.apply_fn(alpha.params),
-            "entropy": -log_probs.mean(),
+            "entropy": -actor_log_probs.mean(),
         }
         return (actor, critic, alpha, key), metrics
 
