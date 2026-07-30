@@ -33,7 +33,7 @@ class CraftaxEnv(Environment):
         env_name: str = "Craftax-Symbolic-v1",
         num_envs: int = 1024,
         num_eval_envs: int = 128,
-        max_episode_length: int = 10_000,
+        max_episode_length: int = 100_000,
         action_repeat: int = 1,
         reset_ratio: int = 16,
         next_obs_in_extras: bool = True,

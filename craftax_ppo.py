@@ -478,7 +478,7 @@ def rollout(
 class Args:
     SEED: int = 43
     ENV_NAME: str = "Craftax-Symbolic-v1"
-    EPISODE_LENGTH: int = 10_000
+    EPISODE_LENGTH: int = 100_000
     RESET_RATIO: int = 16
     MATMUL_PRECISION: Literal["default", "high", "highest"] = "highest"
     COMPUTE_DTYPE: DType = DType.float32
@@ -544,6 +544,8 @@ def main(args: Args) -> None:
             "ACTUAL_TIMESTEPS": actual_timesteps,
             "TRANSITIONS_PER_UPDATE": transitions_per_update,
             "NUM_SEQUENCES": num_sequences,
+            "DEVICE_KIND": jax.local_devices()[0].device_kind,
+            "NUM_DEVICES": len(jax.local_devices()),
         },
     )
 
