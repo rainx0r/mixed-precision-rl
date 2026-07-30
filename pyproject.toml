@@ -7,7 +7,6 @@ requires-python = ">=3.13.11"
 dependencies = [
     "craftax>=1.6.1",
     "distrax>=0.1.9",
-    "jax[cuda13]>=0.10.2",
     "jaxtyping>=0.3.11",
     "optax>=0.2.8",
     "playground>=0.2.0",
@@ -15,6 +14,22 @@ dependencies = [
     "tyro>=1.0.15",
     "wandb>=0.28.0",
     "warp-lang==1.13.0",
+]
+
+[dependency-groups]
+cuda12 = ["jax[cuda12]>=0.10.2"]
+cuda13 = ["jax[cuda13]>=0.10.2"]
+dev = [
+    "pytest>=9.0.2",
+]
+
+[tool.uv]
+default-groups = ["dev", "cuda13"]
+conflicts = [
+    [
+        { group = "cuda12" },
+        { group = "cuda13" },
+    ],
 ]
 
 [tool.ruff]
@@ -28,11 +43,6 @@ force-sort-within-sections = true
 
 [tool.ruff.lint.isort.sections]
 jax = ["jax", "jaxtyping", "optax", "flax", "distrax"]
-
-[dependency-groups]
-dev = [
-    "pytest>=9.0.2",
-]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

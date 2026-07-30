@@ -72,7 +72,7 @@ if [[ ${1:-} == run ]]; then
   echo "Host: $(hostname)"
   echo "Started: $(date --iso-8601=seconds)"
 
-  "$uv_bin" run --frozen dmc_sac.py \
+  "$uv_bin" run --frozen --no-group cuda13 --group cuda12 dmc_sac.py \
     --SEED "$seed" \
     --ENV-NAME "$env_name" \
     --ENV-IMPL warp \
@@ -121,7 +121,7 @@ else
 fi
 source "$repo_root/infra/isambard/bootstrap_uv.sh"
 uv_bin=$UV_BIN
-"$uv_bin" sync --frozen
+"$uv_bin" sync --frozen --no-group cuda13 --group cuda12
 
 max_concurrent=8
 total_runs=$((${#env_names[@]} * 5))
