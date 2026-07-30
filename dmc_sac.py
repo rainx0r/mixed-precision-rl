@@ -246,6 +246,7 @@ def sac_update(
         key, critic_key, actor_key = jax.random.split(key, 3)
         actor_sample_key, alpha_sample_key = jax.random.split(actor_key)
         alpha_value = jax.lax.stop_gradient(alpha.apply_fn(alpha.params))
+        actor_critic_params = critic.params
 
         def critic_loss(params):
             next_distribution = actor.apply_fn(actor.params, data.next_observations)
@@ -309,7 +310,7 @@ def sac_update(
             alpha_log_probs = jax.lax.stop_gradient(
                 alpha_base_log_probs - alpha_forward_log_det_jacobian.sum(axis=-1)
             )
-            q_values = critic.apply_fn(critic.params, data.observations, actions)
+            q_values = critic.apply_fn(actor_critic_params, data.observations, actions)
             min_q_values = jnp.min(q_values, axis=0)
             loss = (alpha_value * actor_log_probs - min_q_values).mean()
             return loss, (actor_log_probs, alpha_log_probs)
