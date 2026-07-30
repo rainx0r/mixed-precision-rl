@@ -12,6 +12,7 @@ from flax.training.train_state import TrainState
 import jax
 from jax.experimental import io_callback
 import jax.numpy as jnp
+from jax.typing import DTypeLike
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 import optax
 
@@ -19,7 +20,7 @@ import tyro
 
 from mixed_precision_rl.envs.base import Environment
 from mixed_precision_rl.envs.dmc import DMCEnv
-from mixed_precision_rl.types import EnvState, Observation
+from mixed_precision_rl.types import DType, EnvState, Observation
 from mixed_precision_rl.utils import (
     init_running_mean_std,
     normalize,
@@ -109,7 +110,7 @@ class Policy(nn.Module):
     output_dim: int
     width: int = 256
     depth: int = 2
-    dtype: jnp.dtype = jnp.float32
+    dtype: DTypeLike = jnp.float32
     activation_fn: Callable[[jax.Array], jax.Array] = nn.relu
     min_std: float = 1e-3
     var_scale: float = 1.0
@@ -141,7 +142,7 @@ class Policy(nn.Module):
 class QValueFunction(nn.Module):
     width: int = 256
     depth: int = 2
-    dtype: jnp.dtype = jnp.float32
+    dtype: DTypeLike = jnp.float32
     activation_fn: Callable[[jax.Array], jax.Array] = nn.relu
     layer_norm: bool = True
     kernel_init: Callable[..., jax.Array] = nn.initializers.lecun_uniform()
@@ -447,6 +448,7 @@ class Args:
     ACTION_REPEAT: int = 1
     WARP_KERNEL_CACHE_DIR: str | None = "/tmp/warp-cache"
     MATMUL_PRECISION: Literal["default", "high", "highest"] = "highest"
+    COMPUTE_DTYPE: DType = DType.float32
 
     TOTAL_TIMESTEPS: int = 10_000_000
     NUM_ENVS: int = 128
@@ -474,6 +476,7 @@ class Args:
     WANDB_ENTITY: str = "evangelos-ch"
     WANDB_PROJECT: str = "mixed-precision-rl"
     WANDB_MODE: Literal["online", "offline", "disabled", "shared"] = "online"
+    WANDB_RUN_NAME: str | None = None
 
     def __post_init__(self) -> None:
         if self.MIN_REPLAY_SIZE % self.NUM_ENVS:
@@ -505,13 +508,16 @@ def main(args: Args) -> None:
     run = wandb.init(
         entity=args.WANDB_ENTITY,
         project=args.WANDB_PROJECT,
-        name=f"sac_{args.ENV_NAME}_{args.ENV_IMPL}_{args.SEED}",
-        tags=["sac", args.ENV_NAME, args.ENV_IMPL, "fp32-baseline"],
+        name=args.WANDB_RUN_NAME
+        or f"sac_{args.ENV_NAME}_{args.ENV_IMPL}_{args.COMPUTE_DTYPE.name}_{args.SEED}",
+        tags=["sac", args.ENV_NAME, args.COMPUTE_DTYPE.name],
         mode=args.WANDB_MODE,
         config={
             **asdict(args),
             "ACTUAL_TIMESTEPS": prefill_environment_steps
             + (num_sac_steps * environment_steps_per_scan),
+            "DEVICE_KIND": jax.local_devices()[0].device_kind,
+            "NUM_DEVICES": len(jax.local_devices()),
         },
     )
 
@@ -544,14 +550,21 @@ def main(args: Args) -> None:
     action_dim = cast(Any, envs.action_space).action_dim
     action_spec = jax.ShapeDtypeStruct((action_dim,), jnp.float32)
 
-    actor_module = Policy(output_dim=action_dim)
+    actor_module = Policy(
+        output_dim=action_dim,
+        dtype=args.COMPUTE_DTYPE(),
+    )
     actor = TrainState.create(
         apply_fn=actor_module.apply,
         params=actor_module.lazy_init(actor_key, obs_spec),
         tx=make_optimizer(args.LEARNING_RATE, args.MAX_GRAD_NORM),
     )
     critic_module = Ensemble(
-        partial(QValueFunction, layer_norm=args.Q_LAYER_NORM),
+        partial(
+            QValueFunction,
+            dtype=args.COMPUTE_DTYPE(),
+            layer_norm=args.Q_LAYER_NORM,
+        ),
     )
     critic_params = critic_module.lazy_init(critic_key, obs_spec, action_spec)
     critic = CriticTrainState.create(

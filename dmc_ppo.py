@@ -396,6 +396,8 @@ def main(args: Args) -> None:
             **asdict(args),
             "ACTUAL_TIMESTEPS": actual_timesteps,
             "TRANSITIONS_PER_UPDATE": transitions_per_update,
+            "DEVICE_KIND": jax.local_devices()[0].device_kind,
+            "NUM_DEVICES": len(jax.local_devices()),
         },
     )
 
