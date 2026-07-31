@@ -79,9 +79,6 @@ class DMCEnv(Environment):
         states = states.replace(info=info)  # ty: ignore[unresolved-attribute]
         return states, states.obs
 
-    def init(self, rng: PRNGKeyArray) -> tuple[EnvState, Observation]:
-        return self._init(rng, self.num_envs)
-
     def step(self, state: EnvState, action: Action) -> tuple[EnvState, Timestep]:
         state = state.replace(info=dict(state.info))
         was_done = state.done.astype(jnp.bool_)

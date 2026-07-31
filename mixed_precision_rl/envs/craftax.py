@@ -87,9 +87,6 @@ class CraftaxEnv(Environment):
         )
         return state, observations
 
-    def init(self, rng: PRNGKeyArray) -> tuple[CraftaxEnvState, Observation]:
-        return self._init(rng, self.num_envs)
-
     def _step(
         self, state: CraftaxEnvState, action: Action, num_envs: int
     ) -> tuple[CraftaxEnvState, Timestep]:
