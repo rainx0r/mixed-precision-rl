@@ -8,6 +8,7 @@ dependencies = [
     "craftax>=1.6.1",
     "distrax>=0.1.9",
     "jaxtyping>=0.3.11",
+    "ogbench>=1.2.1",
     "optax>=0.2.8",
     "playground>=0.2.0",
     "stoa-env>=0.1.2",
@@ -30,6 +31,11 @@ conflicts = [
         { group = "cuda12" },
         { group = "cuda13" },
     ],
+]
+# dm-control requires labmaze for its locomotion arenas, but OGBench only uses
+# dm-control.mjcf. labmaze has no Python 3.13 wheel and otherwise requires Bazel.
+exclude-dependencies = [
+    { package = { name = "dm-control" }, dependencies = ["labmaze"] },
 ]
 
 [tool.ruff]
