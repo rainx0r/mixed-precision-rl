@@ -84,6 +84,7 @@ if [[ ${1:-} == run ]]; then
     --EPISODE-LENGTH 1000 \
     --ACTION-REPEAT "$action_repeat" \
     --TOTAL-TIMESTEPS "$total_timesteps" \
+    --MATMUL-PRECISION "default" \
     --NUM-ENVS 2048 \
     --ROLLOUT-LENGTH 480 \
     --NUM-MINIBATCHES 32 \

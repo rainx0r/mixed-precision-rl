@@ -85,6 +85,7 @@ if [[ ${1:-} == run ]]; then
     --GRAD-UPDATES-PER-STEP 8 \
     --MIN-REPLAY-SIZE 8192 \
     --MAX-REPLAY-SIZE 4194304 \
+    --MATMUL-PRECISION "default" \
     --WARMUP-POLICY policy \
     --LEARNING-RATE 0.001 \
     --ALPHA-LEARNING-RATE 0.0003 \

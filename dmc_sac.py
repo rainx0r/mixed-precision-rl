@@ -18,7 +18,7 @@ import optax
 
 import tyro
 
-from mixed_precision_rl.envs.base import Environment
+from mixed_precision_rl.envs.base import Environment, EnvStartMode
 from mixed_precision_rl.envs.dmc import DMCEnv
 from mixed_precision_rl.types import DType, EnvState, Observation
 from mixed_precision_rl.utils import (
@@ -465,11 +465,13 @@ class Args:
     SEED: int = 43
     ENV_NAME: str = "CheetahRun"
     ENV_IMPL: Literal["jax", "warp"] = "warp"
+    ENV_START_MODE: EnvStartMode = "synchronized"
     EPISODE_LENGTH: int = 1000
     ACTION_REPEAT: int = 1
     WARP_KERNEL_CACHE_DIR: str | None = "/tmp/warp-cache"
     MATMUL_PRECISION: Literal["default", "high", "highest"] = "highest"
     COMPUTE_DTYPE: DType = DType.float32
+    EPISODE_LENGTH: int = 1000
 
     TOTAL_TIMESTEPS: int = 10_000_000
     NUM_ENVS: int = 128
@@ -561,7 +563,13 @@ def main(args: Args) -> None:
         env_key,
         eval_key,
     ) = jax.random.split(jax.random.PRNGKey(args.SEED), 6)
-    env_states, observations = jax.jit(envs.init)(env_key)
+    env_states, observations = jax.jit(
+        lambda rng: envs.init(
+            rng,
+            start_mode=args.ENV_START_MODE,
+            rollout_length=args.EPISODE_LENGTH,
+        )
+    )(env_key)
     obs_spec = cast(
         jax.ShapeDtypeStruct,
         jax.tree.map(
